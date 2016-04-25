@@ -15,13 +15,16 @@ from ethereum.securetrie import SecureTrie
 from ethereum import utils
 from ethereum.utils import address, int256, trie_root, hash32, to_string
 from ethereum import processblock
-from ethereum.transactions import Transaction
+import transactions
+from transactions import Transaction
 from ethereum import bloom
 from ethereum.exceptions import UnknownParentException, VerificationFailed
 from ethereum.slogging import get_logger
 from ethereum.ethpow import check_pow
-from ethereum.db import BaseDB
-from ethereum.config import Env, default_config
+import db
+from db import BaseDB
+import config
+from config import Env, default_config
 
 if sys.version_info.major == 2:
     from repoze.lru import lru_cache
@@ -32,25 +35,6 @@ else:
 log = get_logger('eth.block')
 log_state = get_logger('eth.msg.state')
 Log = processblock.Log
-
-
-
-# Difficulty adjustment algo
-def calc_difficulty(parent, timestamp):
-    config = parent.config
-    offset = parent.difficulty // config['BLOCK_DIFF_FACTOR']
-    if parent.number < config['HOMESTEAD_FORK_BLKNUM']:
-        sign = 1 if timestamp - parent.timestamp < config['DIFF_ADJUSTMENT_CUTOFF'] else -1
-    else:
-        sign = max(1 - 2 * ((timestamp - parent.timestamp) // config['HOMESTEAD_DIFF_ADJUSTMENT_CUTOFF']), -99)
-    # If we enter a special mode where the genesis difficulty starts off below
-    # the minimal difficulty, we allow low-difficulty blocks (this will never
-    # happen in the official protocol)
-    o = int(max(parent.difficulty + offset * sign, min(parent.difficulty, config['MIN_DIFF'])))
-    period_count = (parent.number + 1) // config['EXPDIFF_PERIOD']
-    if period_count >= config['EXPDIFF_FREE_PERIODS']:
-        o = max(o + 2**(period_count - config['EXPDIFF_FREE_PERIODS']), config['MIN_DIFF'])
-    return o
 
 
 
@@ -113,15 +97,13 @@ class Receipt(rlp.Serializable):
 
     fields = [
         ('state_root', trie_root),
-        ('gas_used', big_endian_int),
         ('bloom', int256),
         ('logs', CountableList(processblock.Log))
     ]
 
-    def __init__(self, state_root, gas_used, logs, bloom=None):
+    def __init__(self, state_root, logs, bloom=None):
         # does not call super.__init__ as bloom should not be an attribute but a property
         self.state_root = state_root
-        self.gas_used = gas_used
         self.logs = logs
         if bloom is not None and bloom != self.bloom:
             raise ValueError("Invalid bloom filter")
@@ -146,19 +128,13 @@ class BlockHeader(rlp.Serializable):
 
     :ivar block: an instance of :class:`Block` or `None`
     :ivar prevhash: the 32 byte hash of the previous block
-    :ivar uncles_hash: the 32 byte hash of the RLP encoded list of uncle
-                       headers
     :ivar coinbase: the 20 byte coinbase address
     :ivar state_root: the root of the block's state trie
     :ivar tx_list_root: the root of the block's transaction trie
     :ivar receipts_root: the root of the block's receipts trie
     :ivar bloom: TODO
-    :ivar difficulty: the block's difficulty
     :ivar number: the number of ancestors of this block (0 for the genesis
                   block)
-    :ivar gas_limit: the block's gas limit
-    :ivar gas_used: the total amount of gas used by all transactions in this
-                    block
     :ivar timestamp: a UNIX timestamp
     :ivar extra_data: up to 1024 bytes of additional data
     :ivar nonce: a 32 byte nonce constituting a proof-of-work, or the empty
@@ -167,16 +143,12 @@ class BlockHeader(rlp.Serializable):
 
     fields = [
         ('prevhash', hash32),
-        ('uncles_hash', hash32),
         ('coinbase', address),
         ('state_root', trie_root),
         ('tx_list_root', trie_root),
         ('receipts_root', trie_root),
         ('bloom', int256),
-        ('difficulty', big_endian_int),
         ('number', big_endian_int),
-        ('gas_limit', big_endian_int),
-        ('gas_used', big_endian_int),
         ('timestamp', big_endian_int),
         ('extra_data', binary),
         ('mixhash', binary),
@@ -185,16 +157,12 @@ class BlockHeader(rlp.Serializable):
 
     def __init__(self,
                  prevhash=default_config['GENESIS_PREVHASH'],
-                 uncles_hash=utils.sha3rlp([]),
                  coinbase=default_config['GENESIS_COINBASE'],
                  state_root=trie.BLANK_ROOT,
                  tx_list_root=trie.BLANK_ROOT,
                  receipts_root=trie.BLANK_ROOT,
                  bloom=0,
-                 difficulty=default_config['GENESIS_DIFFICULTY'],
                  number=0,
-                 gas_limit=default_config['GENESIS_GAS_LIMIT'],
-                 gas_used=0,
                  timestamp=0,
                  extra_data='',
                  mixhash=default_config['GENESIS_MIXHASH'],
@@ -271,29 +239,14 @@ class BlockHeader(rlp.Serializable):
     def mining_hash(self):
         return utils.sha3(rlp.encode(self, BlockHeader.exclude(['mixhash', 'nonce'])))
 
-    def check_pow(self, nonce=None):
-        """Check if the proof-of-work of the block is valid.
-
-        :param nonce: if given the proof of work function will be evaluated
-                      with this nonce instead of the one already present in
-                      the header
-        :returns: `True` or `False`
-        """
-        log.debug('checking pow', block=self.hex_hash()[:8])
-        return check_pow(self.number, self.mining_hash, self.mixhash, nonce or self.nonce,
-                         self.difficulty)
-
     def to_dict(self):
         """Serialize the header to a readable dictionary."""
         d = {}
-        for field in ('prevhash', 'uncles_hash', 'extra_data', 'nonce',
-                      'mixhash'):
+        for field in ('prevhash', 'extra_data', 'nonce', 'mixhash'):
             d[field] = b'0x' + encode_hex(getattr(self, field))
-        for field in ('state_root', 'tx_list_root', 'receipts_root',
-                      'coinbase'):
+        for field in ('state_root', 'tx_list_root', 'receipts_root', 'coinbase'):
             d[field] = encode_hex(getattr(self, field))
-        for field in ('number', 'difficulty', 'gas_limit', 'gas_used',
-                      'timestamp'):
+        for field in ('number', 'timestamp'):
             d[field] = to_string(getattr(self, field))
         d['bloom'] = encode_hex(int256.serialize(self.bloom))
         assert len(d) == len(BlockHeader.fields)
@@ -356,7 +309,6 @@ class Block(rlp.Serializable):
                              state given by the header is not known. If the
                              state is known, `None` can be used instead of the
                              empty list.
-    :param uncles: a list of the headers of the uncles of this block
     :param db: the database in which the block's  state, transactions and
                receipts are stored (required)
     :param parent: optional parent which if not given may have to be loaded from
@@ -366,10 +318,9 @@ class Block(rlp.Serializable):
     fields = [
         ('header', BlockHeader),
         ('transaction_list', CountableList(Transaction)),
-        ('uncles', CountableList(BlockHeader))
     ]
 
-    def __init__(self, header, transaction_list=[], uncles=[], env=None,
+    def __init__(self, header, transaction_list=[], env=None,
                  parent=None, making=False):
         assert isinstance(env, Env), "No Env object given"
         assert isinstance(env.db, BaseDB), "No database object given"
@@ -378,9 +329,6 @@ class Block(rlp.Serializable):
         self.config = env.config
 
         self.header = header
-        self.uncles = uncles
-
-        self.uncles = uncles
         self.suicides = []
         self.logs = []
         self.log_listeners = []
@@ -412,25 +360,13 @@ class Block(rlp.Serializable):
                 raise ValueError("Block's prevhash and parent's hash do not match")
             if self.number != parent.header.number + 1:
                 raise ValueError("Block's number is not the successor of its parent number")
-            if not check_gaslimit(parent, self.gas_limit):
-                raise ValueError("Block's gaslimit is inconsistent with its parent's gaslimit")
-            if self.difficulty != calc_difficulty(parent, self.timestamp):
-                raise ValueError("Block's difficulty is inconsistent with its parent's difficulty")
-            if self.gas_used > self.gas_limit:
-                raise ValueError("Gas used exceeds gas limit")
             if self.timestamp <= parent.header.timestamp:
                 raise ValueError("Timestamp equal to or before parent")
             if self.timestamp >= 2**256:
                 raise ValueError("Timestamp waaaaaaaaaaayy too large")
 
-        for uncle in uncles:
-            assert isinstance(uncle, BlockHeader)
-
         original_values = {
-            'gas_used': header.gas_used,
             'timestamp': header.timestamp,
-            'difficulty': header.difficulty,
-            'uncles_hash': header.uncles_hash,
             'bloom': header.bloom,
             'header_mutable': self.header._mutable,
         }
@@ -453,7 +389,6 @@ class Block(rlp.Serializable):
                 parent = self.get_parent_header()
             self.state = SecureTrie(Trie(self.db, parent.state_root))
             self.transaction_count = 0
-            self.gas_used = 0
             # replay
             for tx in transaction_list:
                 success, output = processblock.apply_transaction(self, tx)
@@ -490,10 +425,7 @@ class Block(rlp.Serializable):
 
         if parent:
             must_equal('prev_hash', self.prevhash, parent.hash)
-        must_equal('gas_used', original_values['gas_used'], self.gas_used)
         must_equal('timestamp', self.timestamp, original_values['timestamp'])
-        must_equal('difficulty', self.difficulty, original_values['difficulty'])
-        must_equal('uncles_hash', utils.sha3(rlp.encode(uncles)), original_values['uncles_hash'])
         assert header.block is None
         must_equal('state_root', self.state.root_hash, header.state_root)
         must_equal('tx_list_root', self.transactions.root_hash, header.tx_list_root)
@@ -515,8 +447,6 @@ class Block(rlp.Serializable):
         if not self.state.root_hash_valid():
             raise ValueError("State Merkle root of block %r not found in "
                              "database" % self)
-        if (not self.is_genesis() and self.nonce and not self.header.check_pow()):
-            raise ValueError("PoW check failed")
         if b'validated:' + self.hash not in self.db:
             if self.number == 0:
                 self.db.put(b'validated:' + self.hash, '1')
@@ -535,27 +465,23 @@ class Block(rlp.Serializable):
 
     @classmethod
     def init_from_parent(cls, parent, coinbase, nonce=b'', extra_data=b'',
-                         timestamp=int(time.time()), uncles=[], env=None):
+                         timestamp=int(time.time()), env=None):
         """Create a new block based on a parent block.
 
         The block will not include any transactions and will not be finalized.
         """
         header = BlockHeader(prevhash=parent.hash,
-                             uncles_hash=utils.sha3(rlp.encode(uncles)),
                              coinbase=coinbase,
                              state_root=parent.state_root,
                              tx_list_root=trie.BLANK_ROOT,
                              receipts_root=trie.BLANK_ROOT,
                              bloom=0,
-                             difficulty=calc_difficulty(parent, timestamp),
                              mixhash='',
                              number=parent.number + 1,
-                             gas_limit=calc_gaslimit(parent),
-                             gas_used=0,
                              timestamp=timestamp,
                              extra_data=extra_data,
                              nonce=nonce)
-        block = Block(header, [], uncles, env=env or parent.env,
+        block = Block(header, [], env=env or parent.env,
                       parent=parent, making=True)
         block.ancestor_hashes = [parent.hash] + parent.ancestor_hashes
         block.log_listeners = parent.log_listeners
@@ -609,56 +535,11 @@ class Block(rlp.Serializable):
         self.reset_cache()
 
     @property
-    def uncles_hash(self):
-        return utils.sha3(rlp.encode(self.uncles))
-
-    @property
     def transaction_list(self):
         txs = []
         for i in range(self.transaction_count):
             txs.append(self.get_transaction(i))
         return txs
-
-    def validate_uncles(self):
-        """Validate the uncles of this block."""
-        if utils.sha3(rlp.encode(self.uncles)) != self.uncles_hash:
-            return False
-        if len(self.uncles) > self.config['MAX_UNCLES']:
-            return False
-        for uncle in self.uncles:
-            assert uncle.prevhash in self.db
-            if uncle.number == self.number:
-                log.error("uncle at same block height", block=self)
-                return False
-
-        # Check uncle validity
-        MAX_UNCLE_DEPTH = self.config['MAX_UNCLE_DEPTH']
-        ancestor_chain = [self] + [a for a in self.get_ancestor_list(MAX_UNCLE_DEPTH + 1) if a]
-        assert len(ancestor_chain) == min(self.header.number + 1, MAX_UNCLE_DEPTH + 2)
-        ineligible = []
-        # Uncles of this block cannot be direct ancestors and cannot also
-        # be uncles included 1-6 blocks ago
-        for ancestor in ancestor_chain[1:]:
-            ineligible.extend(ancestor.uncles)
-        ineligible.extend([b.header for b in ancestor_chain])
-        eligible_ancestor_hashes = [x.hash for x in ancestor_chain[2:]]
-        for uncle in self.uncles:
-            parent = get_block(self.env, uncle.prevhash)
-            if uncle.difficulty != calc_difficulty(parent, uncle.timestamp):
-                return False
-            if not uncle.check_pow():
-                return False
-            if uncle.prevhash not in eligible_ancestor_hashes:
-                log.error("Uncle does not have a valid ancestor", block=self,
-                          eligible=[x.encode('hex') for x in eligible_ancestor_hashes],
-                          uncle_prevhash=uncle.prevhash.encode('hex'))
-                return False
-            if uncle in ineligible:
-                log.error("Duplicate uncle", block=self,
-                          uncle=encode_hex(utils.sha3(rlp.encode(uncle))))
-                return False
-            ineligible.append(uncle)
-        return True
 
     def get_ancestor_list(self, n):
         """Return `n` ancestors of this block.
@@ -1138,17 +1019,6 @@ class Block(rlp.Serializable):
 
     def finalize(self):
         """Apply rewards and commit."""
-        delta = int(self.config['BLOCK_REWARD'] + self.config['NEPHEW_REWARD'] * len(self.uncles))
-        self.delta_balance(self.coinbase, delta)
-        self.ether_delta += delta
-
-        for uncle in self.uncles:
-            r = self.config['BLOCK_REWARD'] * \
-                (self.config['UNCLE_DEPTH_PENALTY_FACTOR'] + uncle.number - self.number) \
-                / self.config['UNCLE_DEPTH_PENALTY_FACTOR']
-            r = int(r)
-            self.delta_balance(uncle.coinbase, r)
-            self.ether_delta += r
         self.commit_state()
 
     def to_dict(self, with_state=False, full_transactions=False,
@@ -1190,10 +1060,6 @@ class Block(rlp.Serializable):
         return b
 
     @property
-    def mining_hash(self):
-        return utils.sha3(rlp.encode(self.header,
-                                     BlockHeader.exclude(['nonce', 'mixhash'])))
-
     def get_parent(self):
         """Get the parent of this block."""
         if self.number == 0:
@@ -1224,24 +1090,6 @@ class Block(rlp.Serializable):
         except UnknownParentException:
             return False
 
-    def chain_difficulty(self):
-        """Get the summarized difficulty.
-
-        If the summarized difficulty is not stored in the database, it will be
-        calculated recursively and put in the database.
-        """
-        if self.is_genesis():
-            return self.difficulty
-        elif b'difficulty:' + encode_hex(self.hash) in self.db:
-            encoded = self.db.get(b'difficulty:' + encode_hex(self.hash))
-            return utils.decode_int(encoded)
-        else:
-            o = self.difficulty + self.get_parent().chain_difficulty()
-            # o += sum([uncle.difficulty for uncle in self.uncles])
-            self.state.db.put_temporarily(
-                b'difficulty:' + encode_hex(self.hash), utils.encode_int(o))
-            return o
-
     def __eq__(self, other):
         """Two blocks are equal iff they have the same hash."""
         return isinstance(other, (Block, CachedBlock)) and self.hash == other.hash
@@ -1263,29 +1111,6 @@ class Block(rlp.Serializable):
 
     def __structlog__(self):
         return encode_hex(self.hash)
-
-
-# Gas limit adjustment algo
-def calc_gaslimit(parent):
-    config = parent.config
-    decay = parent.gas_limit // config['GASLIMIT_EMA_FACTOR']
-    new_contribution = ((parent.gas_used * config['BLKLIM_FACTOR_NOM']) //
-                        config['BLKLIM_FACTOR_DEN'] // config['GASLIMIT_EMA_FACTOR'])
-    gl = max(parent.gas_limit - decay + new_contribution, config['MIN_GAS_LIMIT'])
-    if gl < config['GENESIS_GAS_LIMIT']:
-        gl2 = parent.gas_limit + decay
-        gl = min(config['GENESIS_GAS_LIMIT'], gl2)
-    assert check_gaslimit(parent, gl)
-    return gl
-
-
-def check_gaslimit(parent, gas_limit):
-    config = parent.config
-    #  block.gasLimit - parent.gasLimit <= parent.gasLimit / GasLimitBoundDivisor
-    gl = parent.gas_limit // config['GASLIMIT_ADJMAX_FACTOR']
-    a = bool(abs(gas_limit - parent.gas_limit) <= gl)
-    b = bool(gas_limit >= config['MIN_GAS_LIMIT'])
-    return a and b
 
 
 class CachedBlock(Block):
@@ -1348,30 +1173,25 @@ def get_block(env, blockhash):
 def genesis(env, **kwargs):
     assert isinstance(env, Env)
     """Build the genesis block."""
-    allowed_args = set(['start_alloc', 'prevhash', 'coinbase', 'difficulty', 'gas_limit',
-                        'timestamp', 'extra_data', 'mixhash', 'nonce'])
+    allowed_args = set(['start_alloc', 'prevhash', 'coinbase', 'timestamp', 'extra_data', 'mixhash', 'nonce'])
     assert set(kwargs.keys()).issubset(allowed_args)
 
     # https://ethereum.etherpad.mozilla.org/11
     start_alloc = kwargs.get('start_alloc', env.config['GENESIS_INITIAL_ALLOC'])
     header = BlockHeader(
         prevhash=kwargs.get('prevhash', env.config['GENESIS_PREVHASH']),
-        uncles_hash=utils.sha3(rlp.encode([])),
         coinbase=kwargs.get('coinbase', env.config['GENESIS_COINBASE']),
         state_root=trie.BLANK_ROOT,
         tx_list_root=trie.BLANK_ROOT,
         receipts_root=trie.BLANK_ROOT,
         bloom=0,
-        difficulty=kwargs.get('difficulty', env.config['GENESIS_DIFFICULTY']),
         number=0,
-        gas_limit=kwargs.get('gas_limit', env.config['GENESIS_GAS_LIMIT']),
-        gas_used=0,
         timestamp=kwargs.get('timestamp', 0),
         extra_data=kwargs.get('extra_data', env.config['GENESIS_EXTRA_DATA']),
         mixhash=kwargs.get('mixhash', env.config['GENESIS_MIXHASH']),
         nonce=kwargs.get('nonce', env.config['GENESIS_NONCE']),
     )
-    block = Block(header, [], [], env=env)
+    block = Block(header, env=env)
     for addr, data in start_alloc.items():
         if len(addr) == 40:
             addr = decode_hex(addr)

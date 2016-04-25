@@ -6,10 +6,10 @@ except ImportError:
 import rlp
 from rlp.sedes import big_endian_int, binary
 from rlp.utils import decode_hex, encode_hex
-from ethereum import bloom
+import ethereum.bloom
 from ethereum import utils
 from ethereum.processblock import mk_contract_address
-from ethereum.utils import TT256
+from utils import TT256
 from ethereum.exceptions import InvalidTransaction
 from ethereum.slogging import get_logger
 log = get_logger('eth.chain.tx')

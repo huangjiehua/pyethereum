@@ -8,7 +8,7 @@ from rlp.sedes import big_endian_int, binary
 from rlp.utils import decode_hex, encode_hex
 from ethereum import bloom
 from ethereum import utils
-from ethereum.processblock import mk_contract_address, intrinsic_gas_used
+from ethereum.processblock import mk_contract_address
 from ethereum.utils import TT256
 from ethereum.exceptions import InvalidTransaction
 from ethereum.slogging import get_logger
@@ -22,7 +22,7 @@ class Transaction(rlp.Serializable):
 
     """
     A transaction is stored as:
-    [nonce, gasprice, startgas, to, value, data, v, r, s]
+    [nonce, to, value, data, v, r, s]
 
     nonce is the number of transactions already sent by that account, encoded
     in binary form (eg.  0 -> '', 7 -> '\x07', 1000 -> '\x03\xd8').
@@ -40,8 +40,6 @@ class Transaction(rlp.Serializable):
 
     fields = [
         ('nonce', big_endian_int),
-        ('gasprice', big_endian_int),
-        ('startgas', big_endian_int),
         ('to', utils.address),
         ('value', big_endian_int),
         ('data', binary),
@@ -52,17 +50,11 @@ class Transaction(rlp.Serializable):
 
     _sender = None
 
-    def __init__(self, nonce, gasprice, startgas, to, value, data, v=0, r=0, s=0):
+    def __init__(self, nonce, to, value, data, v=0, r=0, s=0):
         to = utils.normalize_address(to, allow_blank=True)
         assert len(to) == 20 or len(to) == 0
-        super(Transaction, self).__init__(nonce, gasprice, startgas, to, value, data, v, r, s)
+        super(Transaction, self).__init__(nonce, to, value, data, v, r, s)
         self.logs = []
-
-        if self.gasprice >= TT256 or self.startgas >= TT256 or \
-                self.value >= TT256 or self.nonce >= TT256:
-            raise InvalidTransaction("Values way too high!")
-        if self.startgas < intrinsic_gas_used(self):
-            raise InvalidTransaction("Startgas too low")
 
         log.debug('deserialized tx', tx=encode_hex(self.hash)[:8])
 
@@ -159,7 +151,7 @@ class Transaction(rlp.Serializable):
 UnsignedTransaction = Transaction.exclude(['v', 'r', 's'])
 
 
-def contract(nonce, gasprice, startgas, endowment, code, v=0, r=0, s=0):
+def contract(nonce, endowment, code, v=0, r=0, s=0):
     """A contract is a special transaction without the `to` argument."""
-    tx = Transaction(nonce, gasprice, startgas, '', endowment, code, v, r, s)
+    tx = Transaction(nonce, '', endowment, code, v, r, s)
     return tx

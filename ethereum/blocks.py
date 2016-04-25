@@ -20,7 +20,6 @@ from transactions import Transaction
 from ethereum import bloom
 from ethereum.exceptions import UnknownParentException, VerificationFailed
 from ethereum.slogging import get_logger
-from ethereum.ethpow import check_pow
 import db
 from db import BaseDB
 import config
@@ -235,10 +234,6 @@ class BlockHeader(rlp.Serializable):
         """The hex encoded block hash"""
         return encode_hex(self.hash)
 
-    @property
-    def mining_hash(self):
-        return utils.sha3(rlp.encode(self, BlockHeader.exclude(['mixhash', 'nonce'])))
-
     def to_dict(self):
         """Serialize the header to a readable dictionary."""
         d = {}
@@ -332,9 +327,7 @@ class Block(rlp.Serializable):
         self.suicides = []
         self.logs = []
         self.log_listeners = []
-        self.refunds = 0
 
-        self.ether_delta = 0
         self._get_transactions_cache = []
 
         # Journaling cache for state tree updates
@@ -461,7 +454,7 @@ class Block(rlp.Serializable):
         :param env: the database for the block
         """
         header = rlp.decode(header_rlp, BlockHeader, env=env)
-        return cls(header, None, [], env=env)
+        return cls(header, [], env=env)
 
     @classmethod
     def init_from_parent(cls, parent, coinbase, nonce=b'', extra_data=b'',
@@ -644,7 +637,7 @@ class Block(rlp.Serializable):
 
     def mk_transaction_receipt(self, tx):
         """Create a receipt for a transaction."""
-        return Receipt(self.state_root, self.gas_used, self.logs)
+        return Receipt(self.state_root, self.logs)
 
     def add_transaction_to_list(self, tx):
         """Add a transaction to the transaction trie.
@@ -975,17 +968,14 @@ class Block(rlp.Serializable):
         """Make a snapshot of the current state to enable later reverting."""
         return {
             'state': self.state.root_hash,
-            'gas': self.gas_used,
             'txs': self.transactions,
             'txcount': self.transaction_count,
             'suicides': self.suicides,
             'logs': self.logs,
-            'refunds': self.refunds,
             'suicides_size': len(self.suicides),
             'logs_size': len(self.logs),
             'journal': self.journal,  # pointer to reference, so is not static
             'journal_size': len(self.journal),
-            'ether_delta': self.ether_delta
         }
 
     def revert(self, mysnapshot):
@@ -1009,13 +999,10 @@ class Block(rlp.Serializable):
         self.logs = mysnapshot['logs']
         while len(self.logs) > mysnapshot['logs_size']:
             self.logs.pop()
-        self.refunds = mysnapshot['refunds']
         self.state.root_hash = mysnapshot['state']
-        self.gas_used = mysnapshot['gas']
         self.transactions = mysnapshot['txs']
         self.transaction_count = mysnapshot['txcount']
         self._get_transactions_cache = []
-        self.ether_delta = mysnapshot['ether_delta']
 
     def finalize(self):
         """Apply rewards and commit."""
@@ -1044,7 +1031,6 @@ class Block(rlp.Serializable):
             txlist.append({
                 "tx": txjson,
                 "medstate": encode_hex(receipt.state_root),
-                "gas": to_string(receipt.gas_used),
                 "logs": [Log.serialize(log) for log in receipt.logs],
                 "bloom": utils.int256.serialize(receipt.bloom)
             })
@@ -1054,9 +1040,6 @@ class Block(rlp.Serializable):
             for address, v in self.state.to_dict().items():
                 state_dump[encode_hex(address)] = self.account_to_dict(address, with_storage_roots)
             b['state'] = state_dump
-        if with_uncles:
-            b['uncles'] = [self.__class__.deserialize_header(u)
-                           for u in self.uncles]
         return b
 
     @property

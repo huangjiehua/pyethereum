@@ -3,12 +3,12 @@ import tempfile
 import time
 from ethereum import spv
 import ethereum
-import ethereum.db as db
+import db, transactions, blocks
 import ethereum.opcodes as opcodes
 import ethereum.abi as abi
 from ethereum.slogging import LogRecorder, configure_logging, set_level
 from ethereum.utils import to_string
-from ethereum.config import Env
+from config import Env
 from ethereum._solidity import get_solidity
 import rlp
 from rlp.utils import decode_hex, encode_hex, ascii_chr
@@ -16,8 +16,8 @@ from rlp.utils import decode_hex, encode_hex, ascii_chr
 serpent = None
 
 u = ethereum.utils
-t = ethereum.transactions
-b = ethereum.blocks
+t = transactions
+b = blocks
 pb = ethereum.processblock
 vm = ethereum.vm
 
@@ -137,7 +137,6 @@ class state():
         self.blocks = [self.block]
         self.block.timestamp = 1410973349
         self.block.coinbase = a0
-        self.block.gas_limit = 10 ** 9
 
     def __del__(self):
         shutil.rmtree(self.temp_data_dir)

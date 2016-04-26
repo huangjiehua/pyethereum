@@ -140,17 +140,17 @@ class state():
     def __del__(self):
         shutil.rmtree(self.temp_data_dir)
 
-    def contract(self, code, sender=k0, endowment=0, language='serpent', gas=None):
+    def contract(self, code, sender=k0, endowment=0, language='solidity'):
         if language not in languages:
             languages[language] = __import__(language)
         language = languages[language]
         evm = language.compile(code)
         o = self.evm(evm, sender, endowment)
-        assert len(self.block.get_code(o)), "Contract code empty"
+        assert len(self.block.get_code(o))
         return o
 
-    def abi_contract(self, code, sender=k0, endowment=0, language='serpent', contract_name='',
-                     gas=None, log_listener=None, listen=True, **kwargs):
+    def abi_contract(self, code, sender=k0, endowment=0, language='solidity', contract_name='',
+                     log_listener=None, listen=True, **kwargs):
         if contract_name:
             assert language == 'solidity'
             cn_args = dict(contract_name=contract_name)
@@ -160,17 +160,15 @@ class state():
             languages[language] = __import__(language)
         language = languages[language]
         evm = language.compile(code, **cn_args)
-        address = self.evm(evm, sender, endowment, gas)
+        address = self.evm(evm, sender, endowment)
         assert len(self.block.get_code(address)), "Contract code empty"
         _abi = language.mk_full_signature(code, **cn_args)
         return ABIContract(self, _abi, address, listen=listen, log_listener=log_listener)
 
-    def evm(self, evm, sender=k0, endowment=0, gas=None):
+    def evm(self, evm, sender=k0, endowment=0):
         sendnonce = self.block.get_nonce(u.privtoaddr(sender))
-        tx = t.contract(sendnonce, gas_price, gas_limit, endowment, evm)
+        tx = t.contract(sendnonce, endowment, evm)
         tx.sign(sender)
-        if gas is not None:
-            tx.startgas = gas
         # print('starting', tx.startgas, gas_limit)
         (s, a) = pb.apply_transaction(self.block, tx)
         if not s:
@@ -188,9 +186,9 @@ class state():
         if funid is not None or abi is not None:
             raise Exception("Send with funid+abi is deprecated. Please use"
                             " the abi_contract mechanism")
-        tm, g = time.time(), self.block.gas_used
+        tm = time.time()
         sendnonce = self.block.get_nonce(u.privtoaddr(sender))
-        tx = t.Transaction(sendnonce, gas_price, gas_limit, to, value, evmdata)
+        tx = t.Transaction(sendnonce, to, value, evmdata)
         self.last_tx = tx
         tx.sign(sender)
         recorder = LogRecorder() if profiling > 1 else None
@@ -201,11 +199,8 @@ class state():
         if profiling > 0:
             zero_bytes = tx.data.count(ascii_chr(0))
             non_zero_bytes = len(tx.data) - zero_bytes
-            intrinsic_gas_used = opcodes.GTXDATAZERO * zero_bytes + \
-                opcodes.GTXDATANONZERO * non_zero_bytes
-            ntm, ng = time.time(), self.block.gas_used
+            ntm = time.time()
             out["time"] = ntm - tm
-            out["gas"] = ng - g - intrinsic_gas_used
         if profiling > 1:
             trace = recorder.pop_records()
             ops = [x['op'] for x in trace if x['event'] == 'vm']

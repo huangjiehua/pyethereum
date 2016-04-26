@@ -103,18 +103,14 @@ def preprocess_code(code):
 
 def mem_extend(mem, compustate, op, start, sz):
     if sz:
+        oldsize = len(mem)
+        newsize = utils.ceil32(start +sz)
         m_extend = (newsize - oldsize) * 32
         mem.extend([0] * m_extend)
     return True
 
 
 def data_copy(compustate, size):
-    if size:
-        copyfee = opcodes.GCOPY * utils.ceil32(size) // 32
-        if compustate.gas < copyfee:
-            compustate.gas = 0
-            return False
-        compustate.gas -= copyfee
     return True
 
 
@@ -123,9 +119,9 @@ def vm_exception(error, **kargs):
     return 0, 0, []
 
 
-def peaceful_exit(cause, gas, data, **kargs):
+def peaceful_exit(cause, data, **kargs):
     log_vm_exit.trace('EXIT', cause=cause, **kargs)
-    return 1, gas, data
+    return 1, data
 
 code_cache = {}
 
@@ -157,7 +153,7 @@ def vm_execute(ext, msg, code):
         # s = time.time()
         # stack size limit error
         if compustate.pc >= codelen:
-            return peaceful_exit('CODE OUT OF RANGE', compustate.gas, [])
+            return peaceful_exit('CODE OUT OF RANGE', [])
 
         op, in_args, out_args, fee, opcode, pushval = \
             processed_code[compustate.pc]
@@ -218,7 +214,7 @@ def vm_execute(ext, msg, code):
         # Valid operations
         if opcode < 0x10:
             if op == 'STOP':
-                return peaceful_exit('STOP', compustate.gas, [])
+                return peaceful_exit('STOP', [])
             elif op == 'ADD':
                 stk.append((stk.pop() + stk.pop()) & TT256M1)
             elif op == 'SUB':
@@ -508,7 +504,7 @@ def vm_execute(ext, msg, code):
             s0, s1 = stk.pop(), stk.pop()
             if not mem_extend(mem, compustate, op, s0, s1):
                 return vm_exception('OOG EXTENDING MEMORY')
-            return peaceful_exit('RETURN', compustate.gas, mem[s0: s0 + s1])
+            return peaceful_exit('RETURN', mem[s0: s0 + s1])
         elif op == 'SUICIDE':
             to = utils.encode_int(stk.pop())
             to = ((b'\x00' * (32 - len(to))) + to)[12:]

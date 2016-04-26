@@ -220,7 +220,8 @@ def _apply_msg(ext, msg, code):
 
 def create_contract(ext, msg):
     #print('CREATING WITH GAS', msg.gas)
-    sender = decode_hex(msg.sender) if len(msg.sender) == 40 else msg.sender
+    log_msg.debug('CONTRACT CREATION') 
+    sender = decode_hex(msg.sender) if len(msg.sender) == 40 else msg.sender 
     if ext.tx_origin != msg.sender:
         ext._block.increment_nonce(msg.sender)
     nonce = utils.encode_int(ext._block.get_nonce(msg.sender) - 1)
@@ -235,16 +236,12 @@ def create_contract(ext, msg):
     # assert not ext.get_code(msg.to)
     code = msg.data.extract_all()
     msg.data = vm.CallData([], 0, 0)
+    snapshot = ext._block.snapshot()
     res, dat = _apply_msg(ext, msg, code)
 
     if res:
         if not len(dat):
             return 1, msg.to
-        else:
-            dat = []
-            if ext._block.number >= ext._block.config['HOMESTEAD_FORK_BLKNUM']:
-                return 0, b''
-            log_msg.debug('CONTRACT CREATION OOG')
         ext._block.set_code(msg.to, b''.join(map(ascii_chr, dat)))
         return 1, msg.to
     else:

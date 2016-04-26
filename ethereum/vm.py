@@ -55,12 +55,11 @@ class CallData(object):
 
 class Message(object):
 
-    def __init__(self, sender, to, value, gas, data,
+    def __init__(self, sender, to, value, data,
                  depth=0, code_address=None, is_create=False):
         self.sender = sender
         self.to = to
         self.value = value
-        self.gas = gas
         self.data = data
         self.depth = depth
         self.logs = []
@@ -77,7 +76,6 @@ class Compustate():
         self.memory = []
         self.stack = []
         self.pc = 0
-        self.gas = 0
         for kw in kwargs:
             setattr(self, kw, kwargs[kw])
 

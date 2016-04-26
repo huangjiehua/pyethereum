@@ -3,7 +3,7 @@ import tempfile
 import time
 from ethereum import spv
 import ethereum
-import db, transactions, blocks
+import db, transactions, blocks, processblock, vm
 import ethereum.opcodes as opcodes
 import ethereum.abi as abi
 from ethereum.slogging import LogRecorder, configure_logging, set_level
@@ -18,8 +18,7 @@ serpent = None
 u = ethereum.utils
 t = transactions
 b = blocks
-pb = ethereum.processblock
-vm = ethereum.vm
+pb = processblock
 
 accounts = []
 keys = []

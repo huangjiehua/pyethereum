@@ -103,22 +103,8 @@ def preprocess_code(code):
 
 def mem_extend(mem, compustate, op, start, sz):
     if sz:
-        oldsize = len(mem) // 32
-        old_totalfee = oldsize * opcodes.GMEMORY + \
-            oldsize**2 // opcodes.GQUADRATICMEMDENOM
-        newsize = utils.ceil32(start + sz) // 32
-        # if newsize > 524288:
-        #     raise Exception("Memory above 16 MB per call not supported by this VM")
-        new_totalfee = newsize * opcodes.GMEMORY + \
-            newsize**2 // opcodes.GQUADRATICMEMDENOM
-        if old_totalfee < new_totalfee:
-            memfee = new_totalfee - old_totalfee
-            if compustate.gas < memfee:
-                compustate.gas = 0
-                return False
-            compustate.gas -= memfee
-            m_extend = (newsize - oldsize) * 32
-            mem.extend([0] * m_extend)
+        m_extend = (newsize - oldsize) * 32
+        mem.extend([0] * m_extend)
     return True
 
 
@@ -149,7 +135,7 @@ def vm_execute(ext, msg, code):
     # if we trace vm, we're in slow mode anyway
     trace_vm = log_vm_op.is_active('trace')
 
-    compustate = Compustate(gas=msg.gas)
+    compustate = Compustate()
     stk = compustate.stack
     mem = compustate.memory
 
@@ -176,10 +162,6 @@ def vm_execute(ext, msg, code):
         op, in_args, out_args, fee, opcode, pushval = \
             processed_code[compustate.pc]
 
-        # out of gas error
-        if fee > compustate.gas:
-            return vm_exception('OUT OF GAS')
-
         # empty stack error
         if in_args > len(compustate.stack):
             return vm_exception('INSUFFICIENT STACK',
@@ -192,7 +174,6 @@ def vm_execute(ext, msg, code):
                                 pre_height=to_string(len(compustate.stack)))
 
         # Apply operation
-        compustate.gas -= fee
         compustate.pc += 1
 
         if trace_vm:
@@ -217,7 +198,6 @@ def vm_execute(ext, msg, code):
                                               x in compustate.memory])))
             if _prevop in ('SSTORE', 'SLOAD') or steps == 0:
                 trace_data['storage'] = ext.log_storage(msg.to)
-            trace_data['gas'] = to_string(compustate.gas + fee)
             trace_data['inst'] = opcode
             trace_data['pc'] = to_string(compustate.pc - 1)
             if steps == 0:
@@ -270,11 +250,6 @@ def vm_execute(ext, msg, code):
                 # fee for exponent is dependent on its bytes
                 # calc n bytes to represent exponent
                 nbytes = len(utils.encode_int(exponent))
-                expfee = nbytes * opcodes.GEXPONENTBYTE
-                if compustate.gas < expfee:
-                    compustate.gas = 0
-                    return vm_exception('OOG EXPONENT')
-                compustate.gas -= expfee
                 stk.append(pow(base, exponent, TT256))
             elif op == 'SIGNEXTEND':
                 s0, s1 = stk.pop(), stk.pop()
@@ -318,9 +293,6 @@ def vm_execute(ext, msg, code):
         elif opcode < 0x40:
             if op == 'SHA3':
                 s0, s1 = stk.pop(), stk.pop()
-                compustate.gas -= opcodes.GSHA3WORD * (utils.ceil32(s1) // 32)
-                if compustate.gas < 0:
-                    return vm_exception('OOG PAYING FOR SHA3')
                 if not mem_extend(mem, compustate, op, s0, s1):
                     return vm_exception('OOG EXTENDING MEMORY')
                 data = b''.join(map(ascii_chr, mem[s0: s0 + s1]))
@@ -361,7 +333,7 @@ def vm_execute(ext, msg, code):
                     else:
                         mem[start + i] = 0
             elif op == 'GASPRICE':
-                stk.append(ext.tx_gasprice)
+                pass
             elif op == 'EXTCODESIZE':
                 addr = utils.coerce_addr_to_hex(stk.pop() % 2**160)
                 stk.append(len(ext.get_code(addr) or b''))
@@ -389,9 +361,9 @@ def vm_execute(ext, msg, code):
             elif op == 'NUMBER':
                 stk.append(ext.block_number)
             elif op == 'DIFFICULTY':
-                stk.append(ext.block_difficulty)
+                pass
             elif op == 'GASLIMIT':
-                stk.append(ext.block_gas_limit)
+                pass
         elif opcode < 0x60:
             if op == 'POP':
                 stk.pop()
@@ -418,16 +390,6 @@ def vm_execute(ext, msg, code):
                 stk.append(ext.get_storage_data(msg.to, stk.pop()))
             elif op == 'SSTORE':
                 s0, s1 = stk.pop(), stk.pop()
-                if ext.get_storage_data(msg.to, s0):
-                    gascost = opcodes.GSTORAGEMOD if s1 else opcodes.GSTORAGEKILL
-                    refund = 0 if s1 else opcodes.GSTORAGEREFUND
-                else:
-                    gascost = opcodes.GSTORAGEADD if s1 else opcodes.GSTORAGEMOD
-                    refund = 0
-                if compustate.gas < gascost:
-                    return vm_exception('OUT OF GAS')
-                compustate.gas -= gascost
-                ext.add_refund(refund)  # adds neg gascost as a refund if below zero
                 ext.set_storage_data(msg.to, s0, s1)
             elif op == 'JUMP':
                 compustate.pc = stk.pop()
@@ -448,7 +410,7 @@ def vm_execute(ext, msg, code):
             elif op == 'MSIZE':
                 stk.append(len(mem))
             elif op == 'GAS':
-                stk.append(compustate.gas)  # AFTER subtracting cost 1
+                pass  # AFTER subtracting cost 1
         elif op[:4] == 'PUSH':
             pushnum = int(op[4:])
             compustate.pc += pushnum
@@ -492,72 +454,55 @@ def vm_execute(ext, msg, code):
                 return vm_exception('OOG EXTENDING MEMORY')
             if ext.get_balance(msg.to) >= value and msg.depth < 1024:
                 cd = CallData(mem, mstart, msz)
-                create_msg = Message(msg.to, b'', value, compustate.gas, cd, msg.depth + 1)
-                o, gas, addr = ext.create(create_msg)
+                create_msg = Message(msg.to, b'', value, cd, msg.depth + 1)
+                o, addr = ext.create(create_msg)
                 if o:
                     stk.append(utils.coerce_to_int(addr))
-                    compustate.gas = gas
                 else:
                     stk.append(0)
-                    compustate.gas = 0
             else:
                 stk.append(0)
         elif op == 'CALL':
-            gas, to, value, meminstart, meminsz, memoutstart, memoutsz = \
-                stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
+            to, value, meminstart, meminsz, memoutstart, memoutsz = \
+                stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
             if not mem_extend(mem, compustate, op, meminstart, meminsz) or \
                     not mem_extend(mem, compustate, op, memoutstart, memoutsz):
                 return vm_exception('OOG EXTENDING MEMORY')
             to = utils.encode_int(to)
             to = ((b'\x00' * (32 - len(to))) + to)[12:]
-            extra_gas = (not ext.account_exists(to)) * opcodes.GCALLNEWACCOUNT + \
-                (value > 0) * opcodes.GCALLVALUETRANSFER
-            submsg_gas = gas + opcodes.GSTIPEND * (value > 0)
-            if compustate.gas < gas + extra_gas:
-                return vm_exception('OUT OF GAS', needed=gas+extra_gas)
             if ext.get_balance(msg.to) >= value and msg.depth < 1024:
-                compustate.gas -= (gas + extra_gas)
                 cd = CallData(mem, meminstart, meminsz)
-                call_msg = Message(msg.to, to, value, submsg_gas, cd,
+                call_msg = Message(msg.to, to, value, cd,
                                    msg.depth + 1, code_address=to)
-                result, gas, data = ext.msg(call_msg)
+                result, data = ext.msg(call_msg)
                 if result == 0:
                     stk.append(0)
                 else:
                     stk.append(1)
-                    compustate.gas += gas
                     for i in range(min(len(data), memoutsz)):
                         mem[memoutstart + i] = data[i]
             else:
-                compustate.gas -= (gas + extra_gas - submsg_gas)
                 stk.append(0)
         elif op == 'CALLCODE':
-            gas, to, value, meminstart, meminsz, memoutstart, memoutsz = \
-                stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
+            to, value, meminstart, meminsz, memoutstart, memoutsz = \
+                stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
             if not mem_extend(mem, compustate, op, meminstart, meminsz) or \
                     not mem_extend(mem, compustate, op, memoutstart, memoutsz):
                 return vm_exception('OOG EXTENDING MEMORY')
-            extra_gas = (value > 0) * opcodes.GCALLVALUETRANSFER
-            submsg_gas = gas + opcodes.GSTIPEND * (value > 0)
-            if compustate.gas < gas + extra_gas:
-                return vm_exception('OUT OF GAS', needed=gas+extra_gas)
             if ext.get_balance(msg.to) >= value and msg.depth < 1024:
-                compustate.gas -= (gas + extra_gas)
                 to = utils.encode_int(to)
                 to = ((b'\x00' * (32 - len(to))) + to)[12:]
                 cd = CallData(mem, meminstart, meminsz)
-                call_msg = Message(msg.to, msg.to, value, submsg_gas, cd,
+                call_msg = Message(msg.to, msg.to, value, cd,
                                    msg.depth + 1, code_address=to)
-                result, gas, data = ext.msg(call_msg)
+                result, data = ext.msg(call_msg)
                 if result == 0:
                     stk.append(0)
                 else:
                     stk.append(1)
-                    compustate.gas += gas
                     for i in range(min(len(data), memoutsz)):
                         mem[memoutstart + i] = data[i]
             else:
-                compustate.gas -= (gas + extra_gas - submsg_gas)
                 stk.append(0)
         elif op == 'RETURN':
             s0, s1 = stk.pop(), stk.pop()
@@ -572,7 +517,7 @@ def vm_execute(ext, msg, code):
             ext.set_balance(msg.to, 0)
             ext.add_suicide(msg.to)
             # print('suiciding %s %s %d' % (msg.to, to, xfer))
-            return 1, compustate.gas, []
+            return 1, []
 
         # this is slow!
         # for a in stk:
@@ -590,16 +535,12 @@ class VmExtBase():
         self.get_storage_data = lambda addr, key: 0
         self.log_storage = lambda addr: 0
         self.add_suicide = lambda addr: 0
-        self.add_refund = lambda x: 0
         self.block_prevhash = 0
         self.block_coinbase = 0
         self.block_timestamp = 0
         self.block_number = 0
-        self.block_difficulty = 0
-        self.block_gas_limit = 0
         self.log = lambda addr, topics, data: 0
         self.tx_origin = b'0' * 40
-        self.tx_gasprice = 0
         self.create = lambda msg: 0, 0, 0
         self.call = lambda msg: 0, 0, 0
         self.sendmsg = lambda msg: 0, 0, 0

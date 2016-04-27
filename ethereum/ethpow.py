@@ -110,13 +110,8 @@ def mine(block_number, difficulty, mining_hash, start_nonce=0, rounds=1000):
     assert utils.isnumeric(start_nonce)
     cache = get_cache(block_number)
     nonce = start_nonce
-    target = utils.zpad(utils.int_to_big_endian(2**256 // (difficulty or 1)), 32)
-    for i in range(1, rounds + 1):
-        bin_nonce = utils.zpad(utils.int_to_big_endian((nonce + i) & TT64M1), 8)
-        o = hashimoto_light(block_number, cache, mining_hash, bin_nonce)
-        if o["result"] <= target:
-            log.debug("nonce found")
-            assert len(bin_nonce) == 8
-            assert len(o["mix digest"]) == 32
-            return bin_nonce, o["mix digest"]
-    return None, None
+    bin_nonce = utils.zpad(utils.int_to_big_endian((nonce) & TT64M1), 8)
+    o = hashimoto_light(block_number, cache, mining_hash, bin_nonce)
+    assert len(bin_nonce) == 8
+    assert len(o["mix digest"]) == 32
+    return bin_nonce, o["mix digest"]

@@ -233,7 +233,10 @@ class BlockHeader(rlp.Serializable):
     def hex_hash(self):
         """The hex encoded block hash"""
         return encode_hex(self.hash)
-
+    
+    @property
+    def mining_hash(self):
+        return utils.sha3(rlp.encode(self, BlockHeader.exclude(['mixhash', 'nonce'])))
     def to_dict(self):
         """Serialize the header to a readable dictionary."""
         d = {}
@@ -1041,6 +1044,9 @@ class Block(rlp.Serializable):
                 state_dump[encode_hex(address)] = self.account_to_dict(address, with_storage_roots)
             b['state'] = state_dump
         return b
+
+    def mining_hash(self):
+        return utils.sha3(rlp.encode(self.header, BlockHeader.exclude['mixhash', 'nonce']))
 
     @property
     def get_parent(self):

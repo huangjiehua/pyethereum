@@ -3,15 +3,13 @@ import time
 from ethereum import utils
 from ethereum import pruning_trie as trie
 from ethereum.refcount_db import RefcountDB
-import db
 from db import OverlayDB
 from ethereum.utils import to_string, is_string
 import rlp
 from rlp.utils import encode_hex
 import blocks
-from ethereum import processblock
+import processblock
 from ethereum.slogging import get_logger
-import config
 from config import Env
 import sys
 log = get_logger('eth.chain')
@@ -183,10 +181,6 @@ class Chain(object):
     def _update_head_candidate(self, forward_pending_transactions=True):
         "after new head is set"
         log.debug('updating head candidate', head=self.head)
-        # collect uncles
-        blk = self.head  # parent of the block we are collecting uncles for
-        if blk.has_parent():
-            blk = blk.get_parent()
         # create block
         ts = max(int(time.time()), self.head.timestamp + 1)
         _env = Env(OverlayDB(self.head.db), self.env.config, self.env.global_config)
@@ -229,6 +223,7 @@ class Chain(object):
         return self.has_block(blockhash)
 
     def _store_block(self, block):
+        print type(block)
         if block.number > 0:
             self.blockchain.put_temporarily(block.hash, rlp.encode(block))
         else:
@@ -241,10 +236,13 @@ class Chain(object):
         "returns True if block was added sucessfully"
         _log = log.bind(block_hash=block)
         # make sure we know the parent
+        print block.to_dict()
         if not block.has_parent() and not block.is_genesis():
             _log.debug('missing parent')
             return False
-
+        if not block.header.check_pow() and not block.is_genesis():
+            _log.debug('invalid nonce')
+            return False
         if block.has_parent():
             try:
                 processblock.verify(block, block.get_parent())
@@ -260,8 +258,10 @@ class Chain(object):
 
         self.index.add_block(block)
         self._store_block(block)
-
+        
         # set to head if this makes the longest chain w/ most work for that number
+        self._update_head(block, forward_pending_transactions)
+        
         block.transactions.clear_all()
         block.receipts.clear_all()
         block.state.db.commit_refcount_changes(block.number)

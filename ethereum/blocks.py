@@ -15,14 +15,12 @@ from ethereum.securetrie import SecureTrie
 from ethereum import utils
 from ethereum.utils import address, int256, trie_root, hash32, to_string
 from ethereum import processblock
-import transactions
 from transactions import Transaction
 from ethereum import bloom
 from ethereum.exceptions import UnknownParentException, VerificationFailed
 from ethereum.slogging import get_logger
-import db
+from ethpow import check_pow
 from db import BaseDB
-import config
 from config import Env, default_config
 
 if sys.version_info.major == 2:
@@ -36,6 +34,15 @@ log_state = get_logger('eth.msg.state')
 Log = processblock.Log
 
 
+class lazy_encode(object):
+    def __init__(self, data):
+        self.data = data
+
+    def __repr__(self):
+        return repr([[k, encode_hex(a), v if k != 'code' else encode_hex(v)] for k, a, v in self.data])
+
+    def __str__(self):
+        return str(repr(self))
 
 class Account(rlp.Serializable):
 
@@ -223,12 +230,10 @@ class BlockHeader(rlp.Serializable):
         else:
             self._receipts_root = value
 
-    _fimxe_hash = None
-
     @property
     def hash(self):
         """The binary block hash"""
-        return self._fimxe_hash or utils.sha3(rlp.encode(self))
+        return utils.sha3(rlp.encode(self))
 
     def hex_hash(self):
         """The hex encoded block hash"""
@@ -237,6 +242,18 @@ class BlockHeader(rlp.Serializable):
     @property
     def mining_hash(self):
         return utils.sha3(rlp.encode(self, BlockHeader.exclude(['mixhash', 'nonce'])))
+
+    def check_pow(self, nonce=None):
+        """Check if the proof-of-work of the block is valid.
+
+        :param nonce: if given the proof of work function will be evaluated
+                      with this nonce instead of the one already present in
+                      the header
+        :returns: `True` or `False`
+        """
+        log.debug('checking pow', block=self.hex_hash()[:8])
+        return check_pow(self.number, self.mining_hash, self.mixhash, nonce or self.nonce)
+
     def to_dict(self):
         """Serialize the header to a readable dictionary."""
         d = {}
@@ -894,7 +911,7 @@ class Block(rlp.Serializable):
                     t.delete(enckey)
             acct.storage = t.root_hash
             self.state.update(addr, rlp.encode(acct))
-        log_state.trace('delta', changes=changes)
+        log_state.trace('delta', changes=lazy_encode(changes))
         self.reset_cache()
         self.db.put_temporarily(b'validated:' + self.hash, '1')
 
@@ -1045,10 +1062,10 @@ class Block(rlp.Serializable):
             b['state'] = state_dump
         return b
 
-    def mining_hash(self):
-        return utils.sha3(rlp.encode(self.header, BlockHeader.exclude['mixhash', 'nonce']))
-
     @property
+    def mining_hash(self):
+        return utils.sha3(rlp.encode(self.header, BlockHeader.exclude(['nonce', 'mixhash'])))
+
     def get_parent(self):
         """Get the parent of this block."""
         if self.number == 0:
@@ -1105,7 +1122,7 @@ class Block(rlp.Serializable):
 class CachedBlock(Block):
     # note: immutable refers to: do not manipulate!
     _hash_cached = None
-
+    
     def _set_acct_item(self):
         raise NotImplementedError
 
@@ -1180,7 +1197,7 @@ def genesis(env, **kwargs):
         mixhash=kwargs.get('mixhash', env.config['GENESIS_MIXHASH']),
         nonce=kwargs.get('nonce', env.config['GENESIS_NONCE']),
     )
-    block = Block(header, env=env)
+    block = Block(header,[], env=env)
     for addr, data in start_alloc.items():
         if len(addr) == 40:
             addr = decode_hex(addr)

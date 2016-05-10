@@ -54,7 +54,7 @@ def get_cache(block_number):
 
 
 @lru_cache(maxsize=32)
-def check_pow(block_number, header_hash, mixhash, nonce, difficulty):
+def check_pow(block_number, header_hash, mixhash, nonce):
     """Check if the proof-of-work of the block is valid.
 
     :param nonce: if given the proof of work function will be evaluated
@@ -71,7 +71,7 @@ def check_pow(block_number, header_hash, mixhash, nonce, difficulty):
     mining_output = hashimoto_light(block_number, cache, header_hash, nonce)
     if mining_output['mix digest'] != mixhash:
         return False
-    return utils.big_endian_to_int(mining_output['result']) <= 2**256 / (difficulty or 1)
+    return True 
 
 
 class Miner():
@@ -106,7 +106,7 @@ class Miner():
             return blk
 
 
-def mine(block_number, difficulty, mining_hash, start_nonce=0, rounds=1000):
+def mine(block_number, mining_hash, start_nonce=0, rounds=1000):
     assert utils.isnumeric(start_nonce)
     cache = get_cache(block_number)
     nonce = start_nonce

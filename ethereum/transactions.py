@@ -9,7 +9,6 @@ from rlp.utils import decode_hex, encode_hex
 import ethereum.bloom
 from ethereum import utils
 from ethereum.processblock import mk_contract_address
-from utils import TT256
 from ethereum.exceptions import InvalidTransaction
 from ethereum.slogging import get_logger
 log = get_logger('eth.chain.tx')

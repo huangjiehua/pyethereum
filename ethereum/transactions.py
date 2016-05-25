@@ -127,9 +127,8 @@ class Transaction(rlp.Serializable):
     @property
     def creates(self):
         "returns the address of a contract created by this tx"
-        if self.to == '':
+        if self.to in (b'', '\0' * 20):
             return mk_contract_address(self.sender, self.nonce)
-
 
     def __eq__(self, other):
         return isinstance(other, self.__class__) and self.hash == other.hash

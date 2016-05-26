@@ -117,7 +117,7 @@ def data_copy(compustate, size):
 
 def vm_exception(error, **kargs):
     log_vm_exit.trace('EXCEPTION', cause=error, **kargs)
-    return 0, 0, []
+    return 0, []
 
 
 def peaceful_exit(cause, data, **kargs):
@@ -130,8 +130,8 @@ code_cache = {}
 def vm_execute(ext, msg, code):
     # precompute trace flag
     # if we trace vm, we're in slow mode anyway
-    trace_vm = log_vm_op.is_active('trace')
-
+    #trace_vm = log_vm_op.is_active('trace')
+    trace_vm = True
     compustate = Compustate()
     stk = compustate.stack
     mem = compustate.memory
@@ -325,6 +325,8 @@ def vm_execute(ext, msg, code):
                         mem[start + i] = processed_code[s1 + i][4]
                     else:
                         mem[start + i] = 0
+            elif op == 'GASPRICE':
+                stk.append(ext.tx_gasprice)
             elif op == 'EXTCODESIZE':
                 addr = utils.coerce_addr_to_hex(stk.pop() % 2**160)
                 stk.append(len(ext.get_code(addr) or b''))
@@ -353,6 +355,8 @@ def vm_execute(ext, msg, code):
                 stk.append(ext.block_number)
             elif op == 'DIFFICULTY':
                 stk.append(ext.block_difficulty)
+	    elif op == 'GASLIMIT':
+                stk.append(ext.block_gas_limit)
         elif opcode < 0x60:
             if op == 'POP':
                 stk.pop()
@@ -403,6 +407,8 @@ def vm_execute(ext, msg, code):
                 stk.append(compustate.pc - 1)
             elif op == 'MSIZE':
                 stk.append(len(mem))
+	    elif op == 'GAS':
+                stk.append(compustate.gas) 
         elif op[:4] == 'PUSH':
             pushnum = int(op[4:])
             compustate.pc += pushnum
@@ -454,8 +460,8 @@ def vm_execute(ext, msg, code):
             else:
                 stk.append(0)
         elif op == 'CALL':
-            to, value, meminstart, meminsz, memoutstart, memoutsz = \
-                stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
+            gas, to, value, meminstart, meminsz, memoutstart, memoutsz = \
+                stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
             if not mem_extend(mem, compustate, op, meminstart, meminsz) or \
                     not mem_extend(mem, compustate, op, memoutstart, memoutsz):
                 return vm_exception('OOG EXTENDING MEMORY')
@@ -476,10 +482,10 @@ def vm_execute(ext, msg, code):
                 stk.append(0)
         elif op == 'CALLCODE' or op == 'DELEGATECALL':
             if op == 'CALLCODE':
-                to, value, meminstart, meminsz, memoutstart, memoutsz = \
+                gas, to, value, meminstart, meminsz, memoutstart, memoutsz = \
                     stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
             else:
-                to, meminstart, meminsz, memoutstart, memoutsz = \
+                gas, to, meminstart, meminsz, memoutstart, memoutsz = \
                     stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop(), stk.pop()
                 value = 0
             if not mem_extend(mem, compustate, op, meminstart, meminsz) or \
@@ -543,8 +549,10 @@ class VmExtBase():
         self.block_timestamp = 0
         self.block_number = 0
         self.block_difficulty = 0
+	self.block_gas_limit = 0
         self.log = lambda addr, topics, data: 0
         self.tx_origin = b'0' * 40
+	self.tx_gasprice = 0
         self.create = lambda msg: 0, 0, 0
         self.call = lambda msg: 0, 0, 0
         self.sendmsg = lambda msg: 0, 0, 0
